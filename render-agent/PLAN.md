@@ -144,11 +144,22 @@ parse_request ─► build_scene ─► preview (low spp) ─► read_stats ─�
 
     Both scene warnings fired. Tb was recomputed as 253.5 K, where htrdr reported 54.4 K. Once two renders existed, the time predictions were within about 25 %.
   - **The p95 bias is also on real htrdr.** Per step, p95 shrank 5.3× (ideal 4×), then 4.2× (4×), then 3.0× (3.06×). Uncapped, the 61 % preview would have asked for 36,074 spp in one go, about 1.9× the 19,127 that actually met the target. The 16× cap prevented that.
-- **M3 – LLM:** endpoint config and request parsing, with an eval set of about 20 requests mapped to expected specs (including the 10 µm-plus-sun conflict).
+- **M3 – LLM** ✅ done 2026-10-17
+  - **Serving:** vLLM 0.31.0 in `~/venvs/vllm` (PyTorch 2.13, CUDA 13.2, no root), started by `scripts/serve-llm.sh`.
+    - Qwen/Qwen3.5-9B, quantized to FP8 on load: 10.4 GiB of weights and 5.75 GiB of KV cache, with a 32k context, on `127.0.0.1:8000` as model `qwen`.
+    - **Gotcha:** FlashInfer JIT-compiles its sampling kernel and needs `nvcc`, which isn't installed, so the script sets `VLLM_USE_FLASHINFER_SAMPLER=0` to use vLLM's PyTorch sampler.
+  - **Parsing:** `llm.py` sends JSON-schema guided decoding through the openai 3 SDK; `request.py` holds the schema.
+  - **The design lesson, learned the hard way: the LLM reports facts and code applies conventions.**
+    - The first schema asked the model to *decide* the spectral mode, target and render or no-render. Tuning the prompt was whack-a-mole: fixing one case broke others, deterministically.
+    - So the model now reports `spectral_words`, the wavelength numbers, `quality_words` and `is_render_request`.
+    - Code then applies the 4 µm thermal/solar cutoff, the default bands, the quality targets (preview 5 %, high quality 0.5 %, otherwise 1 %), and refuses non-render messages.
+    - Every case where the words disagree with the numbers gets a note, e.g. "IR at 3.5 µm is rendered with sunlight only".
+  - **Thinking mode is ruled out.** At temperature 0, Qwen's reasoning loops ("Wait, I need to check…") until it runs out of tokens: 16,384 tokens in 274 s with no answer. Without thinking, a request takes 5–8 s, and 20 run concurrently in about 9 s.
+  - **Evals** (`htrdr-eval`, three repeats each): `requests.jsonl` 60/60, `holdout.jsonl` 24/24, `holdout2.jsonl` 24/24. Both holdouts have since shaped the design, so they aren't unseen anymore. **The last unseen score was holdout2 before its fixes: 6 of 8 cases.** It missed "quick thermal view" (no target) and "Thanks, that's all" (would have rendered defaults). A fresh holdout is needed before claiming generalization.
 - **M4 – LangGraph loop:** guardrails, interrupts and checkpointing. Run end to end on the fake htrdr, then on the real one.
 - **M5 – Run logs and integration:** a real-htrdr run of the example request, with its output opened in the viewer.
 
 ## 6. Open questions
-1. Where should vLLM and Qwen run: another host, or set up in WSL during M3? On a 24 GB 4090, a 14B Qwen (AWQ) is comfortable and a 32B one is tight.
+1. ~~Where should vLLM and Qwen run?~~ Settled in M3: Qwen3.5-9B (FP8) on vLLM in WSL. The newer `RedHatAI/Qwen3.8-27B-INT4` (19.5 GB) barely fits in the ~21 GB of free VRAM and hasn't been tried.
 2. Is clear sky enough to start, or should LES clouds and ground meshes be supported from the beginning?
 3. Is p95 relative error ≤ 1 % the right default target, and what wall-time budget should one run get?

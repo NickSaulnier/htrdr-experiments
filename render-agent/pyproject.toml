@@ -6,12 +6,14 @@ requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=4.1.0",
     "numpy>=2.5.4",
+    "openai>=3.33.0",
     "pydantic>=2.14.1",
 ]
 
 [project.scripts]
 fake-htrdr = "htrdr_agent.fake:main"
 htrdr-mcp = "htrdr_agent.server:main"
+htrdr-eval = "htrdr_agent.evaluate:main"
 
 [build-system]
 requires = ["uv_build>=0.12.7,<0.13.0"]
@@ -24,4 +26,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["htrdr: needs the real htrdr-atmosphere (skipped when it isn't installed)"]
+markers = [
+    "htrdr: needs the real htrdr-atmosphere (skipped when it isn't installed)",
+    "llm: needs the LLM endpoint (skipped when it isn't reachable)",
+]
