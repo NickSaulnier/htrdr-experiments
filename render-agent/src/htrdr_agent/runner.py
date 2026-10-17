@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import signal
 import time
 from collections import deque
@@ -23,6 +24,14 @@ from .argv import command_line
 
 TAIL_LINES = 40
 KILL_GRACE_S = 5.0
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_PROGRESS = re.compile(r"Rendering:\s*(\d+(?:\.\d+)?)\s*%")
+
+
+def progress_percent(line: str) -> float | None:
+    """The percentage in one of htrdr's verbose "Rendering:  42%" lines, or None."""
+    m = _PROGRESS.search(line)
+    return float(m.group(1)) if m else None
 
 Status = Literal["ok", "failed", "timeout", "cancelled"]
 
@@ -71,25 +80,38 @@ class RunResult:
 
 
 async def _pump(stream: asyncio.StreamReader, tail: deque[str], on_line: Callable[[str], None] | None) -> None:
-    # htrdr redraws progress with carriage returns; treat those as line breaks.
+    # htrdr redraws progress with carriage returns and colours its output
+    # with ANSI escapes; keep plain lines, minus its bare ">" prompts.
+    def emit(raw: bytes) -> None:
+        line = _ANSI.sub("", raw.decode(errors="replace")).strip()
+        if line in ("", ">"):
+            return
+        tail.append(line)
+        if on_line:
+            on_line(line)
+
     pending = b""
     while chunk := await stream.read(4096):
         pending += chunk.replace(b"\r", b"\n")
         *lines, pending = pending.split(b"\n")
         for raw in lines:
-            if line := raw.decode(errors="replace").rstrip():
-                tail.append(line)
-                if on_line:
-                    on_line(line)
-    if line := pending.decode(errors="replace").rstrip():
-        tail.append(line)
-        if on_line:
-            on_line(line)
+            emit(raw)
+    emit(pending)
 
 
 def _signal_group(proc: asyncio.subprocess.Process, sig: int) -> None:
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(proc.pid, sig)
+
+
+async def _stop(proc: asyncio.subprocess.Process) -> None:
+    """SIGTERM the process group, then SIGKILL it if it hasn't exited after a grace period."""
+    _signal_group(proc, signal.SIGTERM)
+    try:
+        await asyncio.wait_for(asyncio.shield(proc.wait()), KILL_GRACE_S)
+    except TimeoutError:
+        _signal_group(proc, signal.SIGKILL)
+        await proc.wait()
 
 
 async def run(
@@ -124,19 +146,23 @@ async def run(
     cancel_task = asyncio.ensure_future(cancel.wait()) if cancel else None
     if cancel_task:
         waiters.add(cancel_task)
-    done, _ = await asyncio.wait(waiters, timeout=timeout_s, return_when=asyncio.FIRST_COMPLETED)
+    try:
+        done, _ = await asyncio.wait(waiters, timeout=timeout_s, return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError:
+        # The task running us was cancelled (say, an MCP client aborted the
+        # call): never leave htrdr running on every core with nobody waiting.
+        await _stop(proc)
+        pumps.cancel()
+        if cancel_task:
+            cancel_task.cancel()
+        raise
 
     status: Status
     if proc.returncode is not None:
         status = "ok" if proc.returncode == 0 else "failed"
     else:
         status = "cancelled" if cancel_task in done else "timeout"
-        _signal_group(proc, signal.SIGTERM)
-        try:
-            await asyncio.wait_for(proc.wait(), KILL_GRACE_S)
-        except TimeoutError:
-            _signal_group(proc, signal.SIGKILL)
-            await proc.wait()
+        await _stop(proc)
     if cancel_task and not cancel_task.done():
         cancel_task.cancel()
     await pumps

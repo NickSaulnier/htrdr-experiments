@@ -8,7 +8,7 @@ import pytest
 from htrdr_agent.argv import build_argv
 from htrdr_agent.estimate import spp_for_target
 from htrdr_agent.image import load
-from htrdr_agent.runner import HtrdrInstall, run, run_sync
+from htrdr_agent.runner import HtrdrInstall, progress_percent, run, run_sync
 from htrdr_agent.scene import Inputs, PerspectiveCamera, SceneSpec, Spectral, Sun
 from htrdr_agent.stats import compute_stats
 
@@ -110,6 +110,28 @@ def test_cancel_stops_the_process(ir_scene: SceneSpec, tmp_path: Path):
     assert r.status == "cancelled" and r.wall_s < 10
 
 
+def test_cancelling_the_task_kills_the_process(ir_scene: SceneSpec, tmp_path: Path):
+    pid_file = tmp_path / "pid"
+    # A child that records its pid, then would run for a minute.
+    script = f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(60)"
+
+    async def scenario():
+        task = asyncio.create_task(run([os.sys.executable, "-c", script]))
+        for _ in range(100):
+            if pid_file.exists() and pid_file.read_text():
+                break
+            await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    pid = int(pid_file.read_text())
+    # Reaped by run(): the pid no longer exists.
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
 def test_output_lines_reach_the_callback(tmp_path: Path):
     seen: list[str] = []
     script = "import sys; print('step 1'); sys.stderr.write('progress 50%\\rprogress 100%\\n'); print('done')"
@@ -117,6 +139,21 @@ def test_output_lines_reach_the_callback(tmp_path: Path):
     assert r.ok
     assert seen.count("step 1") == 1 and "progress 50%" in seen and "progress 100%" in seen
     assert r.stdout_tail == ["step 1", "done"]
+
+
+def test_verbose_progress_is_parsed_and_ansi_stripped(ir_scene: SceneSpec, tmp_path: Path):
+    seen: list[float] = []
+
+    def on_line(line: str) -> None:
+        if (p := progress_percent(line)) is not None:
+            seen.append(p)
+
+    r = run_sync(fake_argv(ir_scene, 1, tmp_path / "v.txt", verbose=True), timeout_s=60, env=env(FAKE_HTRDR_SLEEP="0.2"), on_line=on_line)
+    assert r.ok
+    assert seen == [float(p) for p in range(0, 101, 10)]
+    assert all("\x1b" not in line for line in r.stderr_tail)
+    assert r.stderr_tail[-1] == "Rendering: 100%"
+    assert progress_percent("> Rendering:  42%") == 42 and progress_percent("Setup atmosphere") is None
 
 
 def test_install_paths_and_env(tmp_path: Path):

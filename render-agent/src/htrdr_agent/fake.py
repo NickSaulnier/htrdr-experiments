@@ -144,7 +144,16 @@ def render(args: argparse.Namespace, seed: int) -> np.ndarray:
     data[:, :, 6] = np.abs(data[:, :, 6])
 
     work_s = float(per_path.sum()) * paths * 1e-6 / max(args.t or os.cpu_count() or 1, 1)
-    time.sleep(float(os.environ.get("FAKE_HTRDR_SLEEP", work_s * float(os.environ.get("FAKE_HTRDR_SPEED", "1e-4")))))
+    sleep_s = float(os.environ.get("FAKE_HTRDR_SLEEP", work_s * float(os.environ.get("FAKE_HTRDR_SPEED", "1e-4"))))
+    steps = 10
+    for step in range(steps + 1):
+        if args.v:  # htrdr's verbose progress line, colours and all
+            sys.stderr.write(f"\x1b[1m\x1b[32m>\x1b[0m \x1b[2K\rRendering: {100 * step // steps:3d}%")
+            sys.stderr.flush()
+        if step < steps:
+            time.sleep(sleep_s / steps)
+    if args.v:
+        sys.stderr.write("\n")
     return data
 
 

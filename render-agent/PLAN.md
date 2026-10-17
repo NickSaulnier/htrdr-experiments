@@ -125,7 +125,25 @@ parse_request ─► build_scene ─► preview (low spp) ─► read_stats ─�
 
     The median is unbiased. The p95 still overstates at 128 spp, about 12 % per pixel, so an estimate from there overshoots by roughly (2.48/2)² ≈ 1.5×.
   - **Open for M4:** a less biased tail estimate, so the agent doesn't overspend on the last step. For example, use a locally smoothed |μ̂| in the denominator, or estimate the p95 from the median and the spread of the per-pixel σ/μ. Measure both against the fake before choosing.
-- **M2 – FastMCP server:** the four tools, plus run logs as resources. Tested with FastMCP's in-memory client.
+- **M2 – FastMCP server** ✅ done 2026-10-17. `server.py` (FastMCP 4.1, MCP SDK 2.3) and `store.py`. **56 tests pass**: 8 through FastMCP's in-memory client against the fake, including the agent's whole numeric loop with no LLM.
+  - **Tools:**
+    - `build_scene` checks that the input files exist and is idempotent (the scene id is a hash of the spec).
+    - `render` runs one at a time, always with `-v`, so htrdr's `Rendering: N%` lines become MCP progress. A timeout or failure returns its status; a cancelled call kills htrdr.
+    - `read_stats` returns summaries and a proposal, using a cost model fitted to the scene's renders.
+    - `postprocess` uses htpp to make a PNG, with no imaging library needed.
+  - **Resources:** `htrdr://renders`, `htrdr://scenes/{id}`, and `htrdr://renders/{id}` (the run record, with the exact command line). Everything is kept on disk under `runs/`, so state survives a restart.
+  - **Runner fixes:** the runner now kills htrdr when its task is cancelled (it used to leave htrdr running), and it strips ANSI codes from htrdr's output.
+  - **Real-htrdr run over stdio**, the example request (10 µm, sun at 40°, 2 km, 160×120), with a target of p95 ≤ 1 %:
+
+    | spp | wall | p95 |
+    |---|---|---|
+    | 8 | 0.58 s | 61.3 % |
+    | 128 | 0.63 s | 11.6 % |
+    | 2,048 | 1.81 s | 2.79 % |
+    | 19,127 | 11.0 s | **0.92 %** ✓ |
+
+    Both scene warnings fired. Tb was recomputed as 253.5 K, where htrdr reported 54.4 K. Once two renders existed, the time predictions were within about 25 %.
+  - **The p95 bias is also on real htrdr.** Per step, p95 shrank 5.3× (ideal 4×), then 4.2× (4×), then 3.0× (3.06×). Uncapped, the 61 % preview would have asked for 36,074 spp in one go, about 1.9× the 19,127 that actually met the target. The 16× cap prevented that.
 - **M3 – LLM:** endpoint config and request parsing, with an eval set of about 20 requests mapped to expected specs (including the 10 µm-plus-sun conflict).
 - **M4 – LangGraph loop:** guardrails, interrupts and checkpointing. Run end to end on the fake htrdr, then on the real one.
 - **M5 – Run logs and integration:** a real-htrdr run of the example request, with its output opened in the viewer.
