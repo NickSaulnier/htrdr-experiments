@@ -39,7 +39,7 @@ from pydantic import BaseModel, Field
 
 from .llm import LLMConfig, parse_request
 from .request import RenderRequest, RequestError, resolve_spectral, target_percent, target_rel_err, to_scene_spec
-from .runlog import write_run_log
+from .runlog import agent_version, write_run_log
 from .scene import Inputs
 
 Status = Literal["running", "done", "stopped", "needs_input", "failed"]
@@ -56,6 +56,7 @@ class AgentState(TypedDict, total=False):
     spec: dict[str, Any] | None
     scene_id: str | None
     warnings: list[str]
+    input_sha256: dict[str, str]
     target: float
     budget_s: float
     spent_s: float
@@ -73,6 +74,7 @@ class Tools(Protocol):
     async def render(self, scene_id: str, spp: int, timeout_s: float | None) -> dict: ...
     async def read_stats(self, render_id: str, target_rel_err: float, max_spp: int, budget_s: float) -> dict: ...
     async def postprocess(self, render_id: str) -> dict: ...
+    async def info(self) -> dict: ...
 
 
 Parser = Callable[[str], Awaitable[RenderRequest]]
@@ -122,6 +124,12 @@ class AgentConfig:
     approve_over_s: float | None = 120.0
     """Renders predicted to take longer wait for approval; None never asks."""
     runs_dir: Path = Path("runs")
+    viewer_url: str | None = field(default_factory=lambda: os.environ.get("HTRDR_VIEWER_URL", "http://localhost:5173/"))
+    """The browser viewer's dev server, for links in run logs; None for no links."""
+    viewer_root: Path | None = None
+    """The directory the viewer serves (the repo root); default: the runs directory's parent."""
+    llm_info: dict[str, Any] | None = None
+    """The LLM behind parse and decide, for the run log."""
 
 
 # --- decisions ------------------------------------------------------------
@@ -231,7 +239,7 @@ def build_graph(tools: Tools, parser: Parser, decider: Decider | None, config: A
             scene = await tools.build_scene(state["spec"])  # type: ignore[arg-type]
         except Exception as e:  # noqa: BLE001
             return finish_with("failed", f"build_scene failed: {e}")
-        return {"scene_id": scene["scene_id"], "warnings": scene["warnings"]}
+        return {"scene_id": scene["scene_id"], "warnings": scene["warnings"], "input_sha256": scene.get("input_sha256", {})}
 
     async def render(state: AgentState) -> AgentState:
         remaining = state["budget_s"] - state.get("spent_s", 0.0)
@@ -241,7 +249,7 @@ def build_graph(tools: Tools, parser: Parser, decider: Decider | None, config: A
             r = await tools.render(state["scene_id"], spp, timeout_s=max(remaining, 30.0))  # type: ignore[arg-type]
         except Exception as e:  # noqa: BLE001
             return finish_with("failed", f"render failed: {e}")
-        record = {k: r.get(k) for k in ("render_id", "spp", "status", "wall_s", "predicted_wall_s", "command_line", "output", "stderr_tail")}
+        record = {k: r.get(k) for k in ("render_id", "spp", "status", "wall_s", "predicted_wall_s", "command_line", "output", "stderr_tail", "retries", "message")}
         out: AgentState = {"renders": [*state.get("renders", []), record], "spent_s": state.get("spent_s", 0.0) + r["wall_s"], "pending": None}
         if r["status"] != "ok":
             out |= finish_with("failed", f"render {r['render_id']} {r['status']}: {r['message']}")
@@ -330,14 +338,22 @@ def build_graph(tools: Tools, parser: Parser, decider: Decider | None, config: A
             final["render_id"] = ok[-1]["render_id"]
             final["image"] = ok[-1]["output"]
             try:
-                final["png"] = (await tools.postprocess(ok[-1]["render_id"]))["png"]
+                pp = await tools.postprocess(ok[-1]["render_id"])
+                final["png"], final["png_command"] = pp["png"], pp["command_line"]
             except Exception as e:  # noqa: BLE001 - a missing PNG doesn't fail the run
                 final["png_error"] = str(e)
+        try:
+            environment = await tools.info()
+        except Exception as e:  # noqa: BLE001
+            environment = {"error": str(e)}
+        final["environment"] = {**environment, "agent": agent_version(), "llm": config.llm_info}
+        final["elapsed_s"] = round(time.time() - state.get("started_at", time.time()), 2)
         status = state.get("status", "running")
         if status == "running":
             status = "done"
         out: AgentState = {"final": final, "status": status}
-        log = write_run_log({**state, **out}, config.runs_dir)  # type: ignore[arg-type]
+        viewer = (config.viewer_url, config.viewer_root or Path(config.runs_dir).resolve().parent) if config.viewer_url else None
+        log = write_run_log({**state, **out}, config.runs_dir, viewer=viewer)  # type: ignore[arg-type]
         out["final"] = {**final, "run_log": str(log)}
         return out
 
@@ -397,3 +413,6 @@ class McpTools:
 
     async def postprocess(self, render_id: str) -> dict:
         return await self._call("postprocess", render_id=render_id)
+
+    async def info(self) -> dict:
+        return json.loads((await self.client.read_resource("htrdr://info"))[0].text)

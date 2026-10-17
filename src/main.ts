@@ -84,6 +84,8 @@ try {
 interface Slot {
   image: LoadedImage;
   name: string;
+  /** The same-origin path it was fetched from, when it came from a link (not a drop). */
+  source?: string;
 }
 
 const state = {
@@ -557,10 +559,10 @@ function nonFiniteNote(image: LoadedImage, label: string): string {
   return bad > 0 ? `${label}: ${bad} pixels hold non-finite values (shown in magenta). ` : "";
 }
 
-function setImageA(image: LoadedImage, name: string): void {
+function setImageA(image: LoadedImage, name: string, source?: string): void {
   const previousLayout = state.a?.image.layout;
   renderer.setImage(0, image);
-  state.a = { image, name };
+  state.a = { image, name, source };
   clearCaches();
   state.view = null;
   state.autoFit = true;
@@ -591,14 +593,14 @@ function setImageA(image: LoadedImage, name: string): void {
   syncControls();
 }
 
-function setImageB(image: LoadedImage, name: string): void {
+function setImageB(image: LoadedImage, name: string, source?: string): void {
   const problem = incompatibility(state.a!.image, image);
   if (problem) {
     setStatus(`Can't compare ${name} with A: ${problem}`, true);
     return;
   }
   renderer.setImage(1, image);
-  state.b = { image, name };
+  state.b = { image, name, source };
   diffCache.clear();
   if (pendingUrl?.compare) {
     state.compare.mode = pendingUrl.compare;
@@ -618,7 +620,7 @@ function swapImages(): void {
   syncControls();
 }
 
-async function openFile(file: File, slot: 0 | 1): Promise<void> {
+async function openFile(file: File, slot: 0 | 1, source?: string): Promise<void> {
   if (slot === 1 && !state.a) slot = 0;
   state.jobs[slot]?.cancel();
   const job = loadImageFile(file, (fraction) => (progress.value = fraction));
@@ -629,8 +631,8 @@ async function openFile(file: File, slot: 0 | 1): Promise<void> {
   const started = performance.now();
   try {
     const image = await job.promise;
-    if (slot === 0) setImageA(image, file.name);
-    else setImageB(image, file.name);
+    if (slot === 0) setImageA(image, file.name, source);
+    else setImageB(image, file.name, source);
     if (!statusText.textContent) setStatus(`Loaded ${file.name} in ${((performance.now() - started) / 1000).toFixed(2)} s`);
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") return;
@@ -643,6 +645,35 @@ async function openFile(file: File, slot: 0 | 1): Promise<void> {
       if (!state.jobs[0] && !state.jobs[1]) progress.hidden = true;
     }
   }
+}
+
+/** Fetch an htrdr-image from the viewer's own origin (a link's `a` or `b`) and open it. */
+async function openSource(path: string, slot: 0 | 1): Promise<void> {
+  setStatus(`Fetching ${path}…`);
+  let response: Response;
+  try {
+    response = await fetch(path);
+  } catch (err) {
+    setStatus(`Couldn't fetch ${path}: ${err instanceof Error ? err.message : String(err)}`, true);
+    return;
+  }
+  if (!response.ok) {
+    setStatus(`Couldn't fetch ${path}: HTTP ${response.status}`, true);
+    return;
+  }
+  // Dev servers answer unknown paths with the app's own page (status 200).
+  if (response.headers.get("content-type")?.includes("text/html")) {
+    setStatus(`Couldn't fetch ${path}: no such file (the server sent a web page)`, true);
+    return;
+  }
+  const name = path.split("/").filter(Boolean).slice(-2).join("/");
+  await openFile(new File([await response.blob()], name), slot, path);
+}
+
+/** Open a link's sources that aren't already open. */
+async function openLinkedSources(u: UrlSettings): Promise<void> {
+  if (u.a && u.a !== state.a?.source) await openSource(u.a, 0);
+  if (u.b && state.a && u.b !== state.b?.source) await openSource(u.b, 1);
 }
 
 attachDropZone(
@@ -917,7 +948,8 @@ function applyImageSettings(u: UrlSettings): void {
 }
 
 function currentUrlSettings(): UrlSettings {
-  const u: UrlSettings = { mode: state.mode };
+  // Sources only while the open images came from them: a dropped file has no URL.
+  const u: UrlSettings = { a: state.a?.source, b: state.b?.source, mode: state.mode };
   if (state.mode === "image") {
     u.exposure = state.exposure;
     u.white = state.white ?? "auto";
@@ -962,7 +994,13 @@ function scheduleHashUpdate(): void {
 window.addEventListener("hashchange", () => {
   const u = decodeSettings(location.hash);
   applyGeneralSettings(u);
-  applyImageSettings(u);
+  if ((u.a && u.a !== state.a?.source) || (u.b && u.b !== state.b?.source)) {
+    // New images: their settings apply once they've loaded.
+    pendingUrl = u;
+    void openLinkedSources(u);
+  } else {
+    applyImageSettings(u);
+  }
   syncControls();
 });
 
@@ -970,6 +1008,7 @@ window.addEventListener("hashchange", () => {
   const u = decodeSettings(location.hash);
   applyGeneralSettings(u);
   if (Object.keys(u).length > 0) pendingUrl = u;
+  void openLinkedSources(u);
 }
 
 new ResizeObserver(requestRender).observe(canvas);

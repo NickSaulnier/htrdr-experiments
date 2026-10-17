@@ -15,7 +15,8 @@ Accepts htrdr-atmosphere's command line and writes a valid htrdr-image:
   factor of 1e9 in radiance.
 
 Environment knobs for tests: FAKE_HTRDR_SPEED, FAKE_HTRDR_SLEEP (fixed
-sleep in seconds), FAKE_HTRDR_FAIL (exit 1 with an error message).
+sleep in seconds), FAKE_HTRDR_FAIL (exit 1 with an error message),
+FAKE_HTRDR_SIGFPE_ABOVE_THREADS (die of SIGFPE on more threads than that).
 Output is deterministic for a given command line.
 """
 
@@ -192,6 +193,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.O:
         Path(args.O).touch()
+    # Like htrdr 0.12 on many threads: die of SIGFPE above a thread count.
+    sigfpe_above = os.environ.get("FAKE_HTRDR_SIGFPE_ABOVE_THREADS")
+    if sigfpe_above and (args.t or os.cpu_count() or 1) > int(sigfpe_above):
+        import signal
+
+        os.kill(os.getpid(), signal.SIGFPE)
     data = render(args, seed)
     if args.o:
         with open(args.o, "w") as out:

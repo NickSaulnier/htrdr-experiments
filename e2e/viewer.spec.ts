@@ -183,6 +183,36 @@ test("settings come from and go to the URL hash", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+test("a link opens its images and settings, and only safe sources", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("/#a=/fixtures/ab-a.txt&b=/fixtures/ab-b.txt&cmp=diff&k=3&dv=z");
+  await expect(page.locator("#file-info")).toContainText("ab-a.txt");
+  await expect(page.locator("#file-info-b")).toContainText("ab-b.txt");
+  await expect(page.locator("#compare")).toHaveValue("diff");
+  await expect(page.locator("#diff-k")).toHaveValue("3");
+  await expect(page.locator("#diff-view")).toHaveValue("z");
+  // The hash keeps the sources while those images are open...
+  await expect.poll(() => page.evaluate(() => location.hash)).toContain("a=/fixtures/ab-a.txt");
+  // ...and drops A's once a dropped file replaces it.
+  await openA(page, "ab-b.txt");
+  await expect.poll(() => page.evaluate(() => location.hash)).not.toContain("a=/fixtures");
+  expect(errors).toEqual([]);
+
+  // A source on another origin is ignored, not fetched.
+  const requests: string[] = [];
+  page.on("request", (r) => requests.push(r.url()));
+  await page.goto("/#a=https://example.com/x.txt");
+  await page.reload();
+  await expect(page.locator("#file-info")).toHaveText("No image");
+  expect(requests.filter((u) => u.includes("example.com"))).toEqual([]);
+});
+
+test("a link to a missing file says so", async ({ page }) => {
+  await page.goto("/#a=/fixtures/nope.txt");
+  // Vite answers unknown paths with index.html and status 200, not a 404.
+  await expect(page.locator("#status")).toHaveText("Couldn't fetch /fixtures/nope.txt: no such file (the server sent a web page)");
+});
+
 test("a malformed file is reported with its line", async ({ page }) => {
   await page.goto("/");
   await page.setInputFiles("#file-input", { name: "broken.txt", mimeType: "text/plain", buffer: Buffer.from("2 1\n1 2 3 4 5 6 7 8\n1 2 x 4 5 6 7 8\n") });

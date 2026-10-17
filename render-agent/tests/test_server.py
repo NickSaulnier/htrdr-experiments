@@ -60,7 +60,7 @@ def test_lists_the_four_tools_and_the_resources(tmp_path: Path):
     tools, templates, resources = asyncio.run(scenario())
     assert tools == {"build_scene", "render", "read_stats", "postprocess"}
     assert templates == {"htrdr://scenes/{scene_id}", "htrdr://renders/{render_id}"}
-    assert resources == {"htrdr://renders"}
+    assert resources == {"htrdr://renders", "htrdr://info"}
 
 
 def test_build_scene_warns_and_is_idempotent(gas: Path, tmp_path: Path):
@@ -78,6 +78,8 @@ def test_build_scene_warns_and_is_idempotent(gas: Path, tmp_path: Path):
     assert a["scene_id"] == b["scene_id"]
     assert any("no effect in lw" in w for w in a["warnings"])
     assert "spp=<spp>" in a["command_template"] and "-s lw=10000,10000" in a["command_template"]
+    import hashlib
+    assert a["input_sha256"] == {str(gas): hashlib.sha256(gas.read_bytes()).hexdigest()}
 
 
 def test_preview_then_refine_until_the_target_is_met(gas: Path, tmp_path: Path):
@@ -171,6 +173,25 @@ def test_failed_and_timed_out_renders_return_their_status(gas: Path, tmp_path: P
     assert r["status"] == "timeout" and rec["status"] == "timeout" and r["wall_s"] < 10
     r, rec = asyncio.run(scenario(60, FAKE_HTRDR_FAIL="1"))
     assert r["status"] == "failed" and "simulated failure" in r["stderr_tail"][-1]
+
+
+def test_sigfpe_is_retried_on_half_the_threads(gas: Path, tmp_path: Path):
+    async def scenario(threads: int, above: int):
+        cfg = config(tmp_path / str(above), FAKE_HTRDR_SIGFPE_ABOVE_THREADS=str(above))
+        cfg.threads = threads
+        async with Client(create_server(cfg)) as c:
+            sid = (await call(c, "build_scene", spec=ir_spec(gas)))["scene_id"]
+            r = await call(c, "render", scene_id=sid, spp=4)
+            return r, await read(c, f"htrdr://renders/{r['render_id']}")
+
+    # 8 threads crash, 4 don't: one retry recovers.
+    r, rec = asyncio.run(scenario(8, 6))
+    assert r["status"] == "ok" and r["retries"] == 1 and "SIGFPE" in r["message"]
+    assert "-t 4" in rec["command_line"] and "-t 8" in rec["attempts"][0]["command_line"]
+    assert rec["attempts"][0]["returncode"] == -8
+    # Still crashing on 4: one retry only, then the failure is reported.
+    r, rec = asyncio.run(scenario(8, 2))
+    assert r["status"] == "failed" and r["retries"] == 1 and "SIGFPE" in r["message"]
 
 
 def test_state_survives_a_server_restart(gas: Path, tmp_path: Path):

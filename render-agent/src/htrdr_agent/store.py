@@ -39,6 +39,8 @@ class SceneRecord(BaseModel):
     warnings: list[str]
     cache_key: str
     created_at: str
+    input_sha256: dict[str, str] = {}
+    """SHA-256 of each input file when the scene was built, keyed by path."""
 
 
 class RenderRecord(BaseModel):
@@ -55,6 +57,8 @@ class RenderRecord(BaseModel):
     returncode: int | None = None
     stdout_tail: list[str] = []
     stderr_tail: list[str] = []
+    attempts: list[dict[str, Any]] = []
+    """Earlier attempts that failed and were retried (htrdr's SIGFPE)."""
     stats: dict[str, Any] | None = None
     """The last read_stats summary, for the record."""
     postprocess: dict[str, Any] | None = None
@@ -81,13 +85,14 @@ class Store:
     def scene_id(spec: SceneSpec) -> str:
         return "s" + hashlib.sha256(spec.model_dump_json().encode()).hexdigest()[:12]
 
-    def put_scene(self, spec: SceneSpec) -> SceneRecord:
+    def put_scene(self, spec: SceneSpec, input_sha256: dict[str, str] | None = None) -> SceneRecord:
         sid = self.scene_id(spec)
         path = self.root / "scenes" / sid / "scene.json"
         with self._lock:
             if path.exists():
                 return SceneRecord.model_validate_json(path.read_text())
-            rec = SceneRecord(scene_id=sid, spec=spec, warnings=spec.warnings(), cache_key=spec.cache_key(), created_at=now())
+            rec = SceneRecord(scene_id=sid, spec=spec, warnings=spec.warnings(), cache_key=spec.cache_key(), created_at=now(),
+                              input_sha256=input_sha256 or {})
             _write_json(path, rec)
             return rec
 

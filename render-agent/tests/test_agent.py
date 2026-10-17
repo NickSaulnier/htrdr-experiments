@@ -86,6 +86,13 @@ def test_preview_then_refine_until_the_target_is_met(gas: Path, tmp_path: Path):
     for r in renders:
         assert r["command_line"] in log
     assert "Target met" in log and "## How the request was read" in log
+    # Links that open the result in the viewer, which serves the runs directory's parent.
+    final_id = renders[-1]["render_id"]
+    assert f"#a=/runs/renders/{final_id}/image.txt&m=map&q=1&s=value" in log
+    assert f"#a=/runs/renders/{final_id}/image.txt&b=/runs/renders/{renders[-2]['render_id']}/image.txt&cmp=diff" in log
+    assert "## Reproduce" in log and renders[-1]["command_line"] in log.split("## Reproduce")[1]
+    assert f"input `{gas}`: SHA-256 `" in log
+    assert "not a real htrdr install" in log  # the fake
     data = json.loads((Path(state["final"]["run_log"]).parent / "run.json").read_text())
     assert data["status"] == "done" and len(data["renders"]) == len(renders)
     if INSTALL.htpp.is_file():

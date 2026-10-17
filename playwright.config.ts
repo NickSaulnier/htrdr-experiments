@@ -15,6 +15,9 @@ export default defineConfig({
   testDir: "e2e",
   timeout: 120_000,
   fullyParallel: true,
+  // Every test drives WebGL. With 16 parallel browsers, tests started failing
+  // once vLLM held ~21 GB of the 24 GB GPU; 4 workers leave room for both.
+  workers: 4,
   reporter: [["list"]],
   use: {
     baseURL: `http://localhost:${PORT}`,

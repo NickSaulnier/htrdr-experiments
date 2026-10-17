@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { decodeSettings, encodeSettings, type UrlSettings } from "../src/ui/urlState";
+import { decodeSettings, encodeSettings, isSafeSource, type UrlSettings } from "../src/ui/urlState";
 
 describe("URL hash settings", () => {
   const full: UrlSettings = {
+    a: "/runs/renders/r20261017-180748-004-19552b-19165/image.txt",
+    b: "/runs/renders/r20261017-180742-003-19552b-2048/image.txt",
     mode: "map",
     exposure: 0.25,
     white: 173.41,
@@ -57,5 +59,28 @@ describe("URL hash settings", () => {
       range: { mode: "percentile", low: 2, high: 98 },
       view: { cx: 1, cy: 2, zoom: 3 },
     });
+  });
+});
+
+describe("image sources", () => {
+  it("keep paths readable in the hash", () => {
+    expect(encodeSettings({ a: "/runs/renders/r1/image.txt", mode: "map" })).toBe("a=/runs/renders/r1/image.txt&m=map");
+  });
+
+  it.each([
+    ["/runs/renders/r1/image.txt", true],
+    ["/fixtures/xyz.txt", true],
+    ["runs/x.txt", false], // relative
+    ["//evil.example/x.txt", false], // protocol-relative: another origin
+    ["https://evil.example/x.txt", false],
+    ["/runs/../../etc/passwd", false],
+    ["/runs\\x.txt", false], // a backslash
+    ["/" + "x".repeat(2000), false],
+  ])("%s safe: %s", (path, ok) => {
+    expect(isSafeSource(path)).toBe(ok);
+  });
+
+  it("drops unsafe sources when decoding", () => {
+    expect(decodeSettings("#a=https://evil.example/x.txt&b=//evil.example/y&m=map")).toEqual({ mode: "map" });
   });
 });

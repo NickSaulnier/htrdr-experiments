@@ -90,7 +90,11 @@ async def main_async(args: argparse.Namespace) -> int:
         return 2
 
     llm = LLMConfig()
-    config = AgentConfig(runs_dir=runs, approve_over_s=None if args.approve_over is None or args.approve_over < 0 else args.approve_over)
+    config = AgentConfig(
+        runs_dir=runs,
+        approve_over_s=None if args.approve_over is None or args.approve_over < 0 else args.approve_over,
+        llm_info={"model": llm.model, "url": llm.base_url, "decisions": "rules only" if args.rules else "llm"},
+    )
     if args.max_iterations:
         config = replace(config, max_iterations=args.max_iterations)
     if args.fake:

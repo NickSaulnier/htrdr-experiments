@@ -179,7 +179,19 @@ parse_request ─► build_scene ─► preview (low spp) ─► read_stats ─�
 
     The whole run took about 85 s. Predictions were within 5 % because the cost model also used the scene's earlier renders.
   - **Fixed after the first real run:** Qwen's free-text reasons quoted wrong numbers (for example 5.048 % for a p95 of 61.3 %, which was really a Tb note). Now code writes each decision's facts, the LLM gets clearly labelled percentages and is told not to quote numbers, and its reasons only judge.
-- **M5 – Run logs and integration:** a real-htrdr run of the example request, with its output opened in the viewer.
+- **M5 – Run logs and integration** ✅ done 2026-10-17
+  - **Viewer:** `#a=` / `#b=` open same-origin htrdr-images, validated so a shared link can't fetch from elsewhere. Unit tests cover the validation. The e2e suite now has 8 tests × 3 browsers, all passing.
+    - Vite answers missing paths with `index.html` and status 200, so the viewer detects HTML instead of parsing it.
+    - Playwright now runs 4 workers: 16 parallel WebGL browsers failed while vLLM held ~21 GB of VRAM.
+  - **Run logs** add:
+    - Environment: htrdr's build manifest (htrdr has no version option, so `build-htrdr.sh` writes one), the binary's SHA-256, htpp's version, the agent's commit, and the LLM.
+    - Each input file's SHA-256 (also in the scene record and `htrdr://info`).
+    - A Reproduce section, the elapsed time, and viewer links: the final image with suitable settings, and the final vs previous render in z-difference mode.
+  - **htrdr SIGFPE found:** a CIE XYZ render at 320×240, 2,048 spp (about 470M paths) died of SIGFPE in Star-SF's sampling. It crashed at 30–32 threads and succeeded at 16 and 1; the time to crash varied, so the root cause isn't established.
+    - The server now retries once on half the threads and records both attempts.
+    - In the real visible run, the retried render agreed with the next one statistically: **4.7 % of pixels beyond 2σ vs 4.6 % expected from noise**, as shown by the run log's A/B link.
+  - htrdr didn't write any `-O` cache files for these clear-sky scenes; `runs/cache/` stays empty. This isn't investigated.
+  - `README.md` now documents the agent as well as the server. 113 tests pass.
 
 ## 6. Open questions
 1. ~~Where should vLLM and Qwen run?~~ Settled in M3: Qwen3.5-9B (FP8) on vLLM in WSL. The newer `RedHatAI/Qwen3.8-27B-INT4` (19.5 GB) barely fits in the ~21 GB of free VRAM and hasn't been tried.

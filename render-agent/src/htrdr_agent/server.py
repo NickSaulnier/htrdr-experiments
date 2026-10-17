@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import signal
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,12 +33,16 @@ from .argv import build_argv, command_line
 from .estimate import CostModel, propose
 from .image import HtrdrImageError, load
 from .png import ppm_to_png
-from .runner import HtrdrInstall, progress_percent, run
+from .runner import HtrdrInstall, file_sha256, progress_percent, run
 from .scene import SceneSpec
 from .stats import PERCENTILES, compute_stats
 from .store import RenderRecord, SceneRecord, Store, dumps, now
 
 PROGRESS_INTERVAL_S = 0.5
+SIGFPE_RETRIES = 1
+"""htrdr 0.12 sometimes dies of SIGFPE inside Star-SF's sampling when run on many threads
+(seen on CIE XYZ renders of 470M paths at 30-32 threads; fine at 16 and 1). A render that
+does is retried this many times with half the threads; both attempts are recorded."""
 FAKE_HTRDR = [sys.executable, "-m", "htrdr_agent.fake"]
 
 
@@ -55,12 +60,14 @@ class ServerConfig:
     check_inputs: bool = True
     """Refuse scenes whose input files don't exist where htrdr will look."""
     extra: dict[str, str] = field(default_factory=dict)
+    install: HtrdrInstall | None = None
+    """For htrdr://info; None when htrdr is a stand-in (the fake)."""
 
     @classmethod
     def for_install(cls, runs_dir: Path, install: HtrdrInstall | None = None, **kw) -> ServerConfig:
         install = install or HtrdrInstall()
         htpp = [str(install.htpp)] if install.htpp.is_file() else None
-        return cls(runs_dir=runs_dir, htrdr=[str(install.binary)], htpp=htpp, env=install.env(), **kw)
+        return cls(runs_dir=runs_dir, htrdr=[str(install.binary)], htpp=htpp, env=install.env(), install=install, **kw)
 
 
 class SceneResult(BaseModel):
@@ -69,6 +76,8 @@ class SceneResult(BaseModel):
     cache_key: str
     command_template: str
     """The command line every render of this scene runs, with <spp> and <output> to fill in."""
+    input_sha256: dict[str, str]
+    """SHA-256 of each input file, keyed by path."""
 
 
 class RenderResult(BaseModel):
@@ -83,6 +92,8 @@ class RenderResult(BaseModel):
     message: str
     stderr_tail: list[str]
     """htrdr's last output lines; only filled in when the render didn't succeed."""
+    retries: int = 0
+    """Failed attempts before this result (htrdr's SIGFPE; see SIGFPE_RETRIES)."""
 
 
 def create_server(config: ServerConfig) -> FastMCP:
@@ -116,10 +127,10 @@ def create_server(config: ServerConfig) -> FastMCP:
         samples = [(r.spp, r.wall_s) for r in store.renders(scene_id) if r.status == "ok" and r.wall_s]
         return CostModel.fit(samples) if samples else None
 
-    def argv_for(scene: SceneRecord, spp: int, output: Path | str) -> list[str]:
+    def argv_for(scene: SceneRecord, spp: int, output: Path | str, threads: int | None = None) -> list[str]:
         argv = build_argv(
             scene.spec, spp=spp, output=output, binary="htrdr-atmosphere",
-            cache=store.cache_path(scene), threads=config.threads, verbose=True,
+            cache=store.cache_path(scene), threads=threads or config.threads, verbose=True,
         )
         return config.htrdr + argv[1:]
 
@@ -136,9 +147,12 @@ def create_server(config: ServerConfig) -> FastMCP:
             missing = [str(p) for p in (i.atmosphere, i.clouds, i.mie, i.ground, i.materials) if p is not None and not Path(p).is_file()]
             if missing:
                 raise ToolError(f"input files not found: {', '.join(missing)}")
-        rec = store.put_scene(spec)
+        i = spec.inputs
+        hashes = {str(p): file_sha256(p) for p in (i.atmosphere, i.clouds, i.mie, i.ground, i.materials) if p is not None and Path(p).is_file()}
+        rec = store.put_scene(spec, hashes)
         template = command_line(argv_for(rec, 1, "<output>")).replace("spp=1", "spp=<spp>")
-        return SceneResult(scene_id=rec.scene_id, warnings=rec.warnings, cache_key=rec.cache_key, command_template=template)
+        return SceneResult(scene_id=rec.scene_id, warnings=rec.warnings, cache_key=rec.cache_key, command_template=template,
+                           input_sha256=rec.input_sha256 or hashes)
 
     @mcp.tool
     async def render(scene_id: str, spp: int, ctx: Context, timeout_s: float | None = None) -> RenderResult:
@@ -181,32 +195,49 @@ def create_server(config: ServerConfig) -> FastMCP:
                     latest.append(pct)
 
             progress = asyncio.create_task(reporter())
+            attempts: list[dict] = []
+            threads = config.threads or os.cpu_count() or 2
             try:
                 result = await run(argv, timeout_s=timeout, env=config.env, on_line=on_line)
+                while result.returncode == -signal.SIGFPE and len(attempts) < SIGFPE_RETRIES and threads > 1:
+                    attempts.append({
+                        "command_line": result.command_line, "returncode": result.returncode,
+                        "wall_s": round(result.wall_s, 3), "stderr_tail": result.stderr_tail[-10:],
+                    })
+                    threads = max(1, threads // 2)
+                    argv = argv_for(scene, spp, output, threads=threads)
+                    await ctx.report_progress(0, 100, f"{render_id}: htrdr died of SIGFPE; retrying on {threads} threads")
+                    latest.clear()
+                    result = await run(argv, timeout_s=timeout, env=config.env, on_line=on_line)
             except asyncio.CancelledError:
-                store.save_render(rec.model_copy(update={"status": "cancelled", "finished_at": now()}))
+                store.save_render(rec.model_copy(update={"status": "cancelled", "finished_at": now(), "attempts": attempts}))
                 raise
             finally:
                 progress.cancel()
 
+            # The record's command line is the attempt that produced the result.
             rec = rec.model_copy(update={
                 "status": result.status, "returncode": result.returncode, "wall_s": round(result.wall_s, 3),
                 "finished_at": now(), "stdout_tail": result.stdout_tail, "stderr_tail": result.stderr_tail,
+                "argv": list(argv), "command_line": command_line(argv), "attempts": attempts,
             })
             store.save_render(rec)
 
+        retried = f" after htrdr died of SIGFPE and was rerun on {threads} threads" if attempts else ""
         if result.ok:
             await ctx.report_progress(100, 100, f"{render_id}: done")
-            message = f"Rendered in {result.wall_s:.2f} s. Call read_stats({render_id!r}) for its error and cost."
+            message = f"Rendered in {result.wall_s:.2f} s{retried}. Call read_stats({render_id!r}) for its error and cost."
         elif result.status == "timeout":
             message = f"htrdr was stopped after the {timeout:g} s timeout."
+        elif result.returncode == -signal.SIGFPE:
+            message = f"htrdr died of SIGFPE (a floating-point fault){retried}; see stderr_tail. Fewer threads may avoid it."
         else:
             message = f"htrdr {result.status} (exit code {result.returncode}); see stderr_tail."
         return RenderResult(
             render_id=render_id, scene_id=scene_id, spp=spp, status=result.status,
             wall_s=round(result.wall_s, 3), predicted_wall_s=round(predicted, 3) if predicted is not None else None,
             command_line=rec.command_line, output=str(output), message=message,
-            stderr_tail=[] if result.ok else result.stderr_tail[-10:],
+            stderr_tail=[] if result.ok else result.stderr_tail[-10:], retries=len(attempts),
         )
 
     @mcp.tool(annotations={"readOnlyHint": True})
@@ -314,6 +345,13 @@ def create_server(config: ServerConfig) -> FastMCP:
                "width": width, "height": height, "notes": notes}
         store.save_render(rec.model_copy(update={"postprocess": out}))
         return out
+
+    @mcp.resource("htrdr://info", mime_type="application/json")
+    def info() -> str:
+        """What renders run with: htrdr's build manifest and binary hash, and htpp's version."""
+        if config.install is None or config.htrdr != [str(config.install.binary)]:
+            return dumps({"htrdr": " ".join(config.htrdr), "note": "not a real htrdr install (e.g. the fake)"})
+        return dumps(config.install.info())
 
     @mcp.resource("htrdr://renders", mime_type="application/json")
     def list_renders() -> str:

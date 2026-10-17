@@ -1,7 +1,11 @@
-// Viewer settings in the URL hash, so a view can be bookmarked or shared
-// (the images themselves are local files and are not part of the URL).
+// Viewer settings in the URL hash, so a view can be bookmarked or shared.
 //
-//   #m=map&q=1&s=relative&pal=viridis&r=pct:1:99&log=1&cmp=diff&k=3&v=32,24,8
+//   #a=/runs/renders/r1/image.txt&m=map&q=1&s=relative&pal=viridis&r=pct:1:99&cmp=diff&k=3&v=32,24,8
+//
+// Dropped files are local and not part of the URL. Images the viewer can
+// fetch from its own origin can be: `a` and `b` are paths (such as the
+// render agent's outputs under /runs, served by the dev server) to open as
+// A and B.
 //
 // Decoding is forgiving: unknown keys and invalid values are ignored, so a
 // hand-edited or stale link degrades to defaults instead of failing.
@@ -13,6 +17,9 @@ import type { RangeMode } from "../render/range";
 import type { CompareMode, DisplayMode } from "../render/settings";
 
 export interface UrlSettings {
+  /** Same-origin paths of htrdr-images to open as A and B. */
+  a?: string;
+  b?: string;
   mode?: DisplayMode;
   exposure?: number;
   /** "auto" is htpp's automatic white. */
@@ -34,8 +41,26 @@ export interface UrlSettings {
 
 const num = (v: number) => String(Number(v.toPrecision(9)));
 
+/**
+ * A path the viewer may fetch: absolute on its own origin, with no scheme,
+ * no protocol-relative "//", no backslashes and no ".." segments. Links are
+ * shared, so a link must not make the viewer fetch from somewhere else.
+ */
+export function isSafeSource(path: string): boolean {
+  return (
+    path.startsWith("/") &&
+    !path.startsWith("//") &&
+    !path.includes("\\") &&
+    !path.includes(":") &&
+    !path.split("/").includes("..") &&
+    path.length <= 1024
+  );
+}
+
 export function encodeSettings(s: UrlSettings): string {
   const p = new URLSearchParams();
+  if (s.a) p.set("a", s.a);
+  if (s.b) p.set("b", s.b);
   if (s.mode) p.set("m", s.mode);
   if (s.exposure !== undefined) p.set("exp", num(s.exposure));
   if (s.white !== undefined) p.set("w", s.white === "auto" ? "auto" : num(s.white));
@@ -58,7 +83,7 @@ export function encodeSettings(s: UrlSettings): string {
   if (s.view) p.set("v", [s.view.cx, s.view.cy, s.view.zoom].map(num).join(","));
   // URLSearchParams escapes ":" and ","; they are safe in a fragment and
   // much easier to read unescaped.
-  return p.toString().replace(/%3A/gi, ":").replace(/%2C/gi, ",");
+  return p.toString().replace(/%3A/gi, ":").replace(/%2C/gi, ",").replace(/%2F/gi, "/");
 }
 
 const finite = (text: string | null): number | undefined => {
@@ -74,6 +99,11 @@ function oneOf<T extends string>(text: string | null, options: readonly T[]): T 
 export function decodeSettings(hash: string): UrlSettings {
   const p = new URLSearchParams(hash.replace(/^#/, ""));
   const s: UrlSettings = {};
+
+  for (const key of ["a", "b"] as const) {
+    const path = p.get(key);
+    if (path && isSafeSource(path)) s[key] = path;
+  }
 
   const mode = oneOf(p.get("m"), ["image", "map"] as const);
   if (mode) s.mode = mode;

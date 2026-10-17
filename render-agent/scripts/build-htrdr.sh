@@ -122,5 +122,23 @@ for entry in "${MESO_STAR[@]}"; do
   mark_done "$name"
 done
 
+# htrdr has no version option, so record what was built, for run logs.
+log "writing the build manifest"
+manifest="$PREFIX/share/htrdr-build/manifest.json"
+mkdir -p "$(dirname "$manifest")"
+{
+  printf '{\n  "built_at": "%s",\n  "components": {\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  first=1
+  for entry in "sleef - $SLEEF_TAG" "embree - $EMBREE_TAG" "${MESO_STAR[@]}"; do
+    read -r name _ tag _ <<<"$entry"
+    commit=$(git -C "$SRC/$name" rev-parse --short HEAD 2>/dev/null || echo unknown)
+    [ $first = 1 ] || printf ',\n'
+    printf '    "%s": {"tag": "%s", "commit": "%s"}' "$name" "$tag" "$commit"
+    first=0
+  done
+  printf '\n  }\n}\n'
+} >"$manifest"
+echo "$manifest"
+
 log "done"
 "$PREFIX/bin/htrdr-atmosphere" -h 2>&1 | head -3 || true

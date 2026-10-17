@@ -60,6 +60,48 @@ class HtrdrInstall:
     def available(self) -> bool:
         return self.binary.is_file() and os.access(self.binary, os.X_OK)
 
+    def info(self) -> dict:
+        """What's installed, for run logs. htrdr has no version option, so this reads the
+        manifest scripts/build-htrdr.sh writes, and hashes the binary."""
+        import json
+        import subprocess
+
+        out: dict = {"prefix": str(self.prefix), "htrdr": str(self.binary)}
+        if self.binary.is_file():
+            out["htrdr_sha256"] = file_sha256(self.binary)
+        manifest = self.prefix / "share" / "htrdr-build" / "manifest.json"
+        if manifest.is_file():
+            data = json.loads(manifest.read_text())
+            out["built_at"] = data.get("built_at")
+            out["components"] = data.get("components", {})
+            out["htrdr_version"] = out["components"].get("htrdr", {}).get("tag")
+        if self.htpp.is_file():
+            try:
+                r = subprocess.run([str(self.htpp), "-V"], capture_output=True, text=True, timeout=10, env=self.env())
+                out["htpp_version"] = (r.stdout or r.stderr).strip()
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        return out
+
+
+_HASHES: dict[tuple[str, int, int], str] = {}
+
+
+def file_sha256(path: Path | str) -> str:
+    """SHA-256 of a file, cached by path, size and modification time (input files are large)."""
+    import hashlib
+
+    p = Path(path)
+    st = p.stat()
+    key = (str(p.resolve()), st.st_size, st.st_mtime_ns)
+    if key not in _HASHES:
+        h = hashlib.sha256()
+        with p.open("rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        _HASHES[key] = h.hexdigest()
+    return _HASHES[key]
+
 
 @dataclass(frozen=True)
 class RunResult:

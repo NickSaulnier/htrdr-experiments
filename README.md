@@ -4,6 +4,8 @@ A browser viewer for [htrdr](https://www.meso-star.com/projects/htrdr/htrdr.html
 
 Built with TypeScript, WebGL2 and Vite. Files never leave your machine: they are parsed in a Web Worker and drawn locally.
 
+This repository also holds the [**htrdr render agent**](render-agent/README.md), which renders plain-language requests with htrdr until a target uncertainty is met. Its run logs link straight into this viewer.
+
 ## Features
 
 - **Image mode:** htpp's tone mapping in a fragment shader: its filmic curve, its XYZ → sRGB conversion and sRGB encoding. Exposure and white (Ymax) are sliders, and htpp's automatic white (the Y at 99.5 % of pixels) is the default.
@@ -22,6 +24,7 @@ Built with TypeScript, WebGL2 and Vite. Files never leave your machine: they are
   - PPM, as htpp writes it
   - a gnuplot script, in the layout of htpp's `-m …:gnuplot`
 - **Shareable views:** settings are kept in the URL hash. A bookmark or link reopens the same view once the same files are dropped in.
+- **Links that open images:** a link can also name the images, as same-origin paths, for example `#a=/runs/renders/r1/image.txt&b=/runs/renders/r0/image.txt&cmp=diff`. The dev server serves the repository, including the render agent's outputs under `runs/`. Only paths on the viewer's own origin are fetched.
 - **Large images:** a 3840×2160 file (540 MB of text) loads in about 2.6 s, and every control responds in under 400 ms.
 
 ## Getting started
