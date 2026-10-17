@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>htrdr viewer</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="toolbar">
+        <div class="toolbar-row">
+          <button id="open" type="button" title="Open image A">Open…</button>
+          <input id="file-input" type="file" hidden />
+          <span id="file-info" class="file-info muted">No image</span>
+          <button id="open-b" type="button" disabled title="Open a second image B to compare with A">Open B…</button>
+          <input id="file-input-b" type="file" hidden />
+          <span id="file-info-b" class="file-info" hidden></span>
+          <label class="field">
+            Compare
+            <select id="compare" disabled>
+              <option value="none">Off</option>
+              <option value="split">Split</option>
+              <option value="diff">Difference</option>
+            </select>
+          </label>
+          <button id="swap" type="button" disabled title="Swap A and B">Swap</button>
+          <details id="export-menu" class="menu" hidden>
+            <summary>Export</summary>
+            <div class="menu-items">
+              <button type="button" data-export="png">PNG at native resolution</button>
+              <button type="button" data-export="ppm">PPM (P3), as htpp writes it</button>
+              <button type="button" data-export="gnuplot">gnuplot script, like htpp -m …:gnuplot</button>
+            </div>
+          </details>
+          <span class="spacer"></span>
+          <button id="fit" type="button" disabled title="Fit (F, double-click)">Fit</button>
+          <button id="actual" type="button" disabled title="1:1 (1)">1:1</button>
+          <span id="zoom" class="muted tabular"></span>
+          <button id="help-button" type="button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+        </div>
+        <div id="controls-row" class="toolbar-row" hidden>
+          <label id="mode-field" class="field">
+            Mode
+            <select id="mode">
+              <option value="image">Image</option>
+              <option value="map">Map</option>
+            </select>
+          </label>
+          <div id="image-controls" class="group" hidden>
+            <span class="field" title="htpp's exposure. The slider moves in stops; double-click it to reset to 1.">
+              <label for="exposure-slider">Exposure</label>
+              <input id="exposure-slider" type="range" min="-12" max="12" step="0.05" value="0" />
+              <input id="exposure" class="num" type="number" min="0" step="any" aria-label="Exposure value" />
+            </span>
+            <span class="field" title="Luminance mapped to white (htpp's white, Ymax). The slider moves in stops around the automatic value; double-click it to return to automatic.">
+              <label for="white-slider">White</label>
+              <input id="white-slider" type="range" min="-10" max="10" step="0.05" value="0" />
+              <input id="white" class="num" type="number" min="0" step="any" aria-label="White luminance" />
+              <button id="white-auto" type="button" aria-pressed="true">Auto</button>
+            </span>
+          </div>
+          <div id="map-controls" class="group" hidden>
+            <label class="field">Quantity <select id="quantity"></select></label>
+            <label class="field">Show <select id="statistic"></select></label>
+            <label class="field">Palette <select id="palette" title="Palettes from star-cmap's list, rebuilt from matplotlib (CC0), ColorBrewer (Apache-2.0) and Moreland's cool-warm. chromajs, gnpu, parula, sand, whgnbu, whylrd and ylrd are not available."></select></label>
+            <span class="field">
+              <label for="range-mode">Range</label>
+              <select id="range-mode">
+                <option value="auto">Min–max</option>
+                <option value="percentile">Percentile</option>
+                <option value="manual">Manual</option>
+              </select>
+              <span id="pct-fields" class="field" hidden>
+                <input id="pct-low" class="num short" type="number" min="0" max="100" step="any" aria-label="Lower percentile" />
+                –
+                <input id="pct-high" class="num short" type="number" min="0" max="100" step="any" aria-label="Upper percentile" />
+                %
+              </span>
+              <input id="range-min" class="num" type="number" step="any" aria-label="Range minimum" title="Value on the palette's low end; editing switches to manual" />
+              –
+              <input id="range-max" class="num" type="number" step="any" aria-label="Range maximum" title="Value on the palette's high end; editing switches to manual" />
+            </span>
+            <label class="field"><input id="log" type="checkbox" /> Log</label>
+          </div>
+          <div id="diff-controls" class="group" hidden>
+            <label class="field">Quantity <select id="diff-quantity"></select></label>
+            <label class="field">
+              Show
+              <select id="diff-view">
+                <option value="delta">Δ = A − B</option>
+                <option value="z">z = Δ / σΔ</option>
+              </select>
+            </label>
+            <label class="field" title="Pixels with |Δ| below k·σΔ, where σΔ = √(σA² + σB²), are grayed out as not significant">
+              Gray below
+              <input id="diff-k" class="num short" type="number" min="0" step="0.5" aria-label="Significance threshold k" />
+              σΔ
+            </label>
+            <label class="field">Palette <select id="diff-palette"></select></label>
+            <span class="field" title="Half-width of the symmetric range on the palette">
+              <label for="diff-range">Range ±</label>
+              <input id="diff-range" class="num" type="number" min="0" step="any" />
+              <button id="diff-range-auto" type="button" aria-pressed="true" title="99th percentile of |Δ| (or |z|) over the significant pixels">Auto</button>
+            </span>
+          </div>
+        </div>
+      </header>
+      <main id="stage">
+        <canvas id="view"></canvas>
+        <div id="empty" class="empty">
+          <p>Drop an <code>htrdr-image</code> file anywhere, or use <strong>Open…</strong></p>
+          <p class="muted">Drop two files to compare them · drag to pan · wheel to zoom · F to fit · 1 for 1:1</p>
+        </div>
+        <div id="split" class="split" hidden>
+          <span class="split-tag split-tag-a">A</span>
+          <span class="split-tag split-tag-b">B</span>
+          <div class="split-knob" title="Drag to move the split"></div>
+        </div>
+        <div id="colorbar" class="colorbar" hidden>
+          <div class="colorbar-title"></div>
+          <canvas width="1024" height="1"></canvas>
+          <div class="colorbar-ticks tabular"><span></span><span></span><span></span></div>
+          <div class="colorbar-note muted" hidden></div>
+        </div>
+        <div id="help" class="help" role="dialog" aria-modal="true" aria-labelledby="help-title" hidden>
+          <div class="help-card">
+            <h2 id="help-title">Keyboard shortcuts</h2>
+            <dl id="help-list"></dl>
+            <p class="muted">Settings are kept in the page address, so a bookmark or a shared link reopens this view once the same files are dropped. Press ? or Esc to close.</p>
+          </div>
+        </div>
+        <div id="drop-overlay" class="drop-overlay" hidden>
+          <div class="drop-zone" data-slot="a">Drop to open as A</div>
+          <div class="drop-zone" data-slot="b">Drop to compare as B</div>
+        </div>
+      </main>
+      <footer class="statusbar">
+        <span id="status"></span>
+        <progress id="progress" max="1" hidden></progress>
+        <span class="spacer"></span>
+        <span id="cursor" class="muted tabular"></span>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

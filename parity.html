@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GPU parity check</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      body { overflow: auto; }
+      main { padding: 16px; max-width: 64rem; }
+      table { border-collapse: collapse; font-variant-numeric: tabular-nums; width: 100%; }
+      th, td { text-align: left; padding: 3px 10px; border-bottom: 1px solid var(--border); }
+      .pass { color: #7ad97a; }
+      .fail { color: var(--error); }
+      canvas { display: none; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>GPU vs CPU parity</h1>
+      <p class="muted">
+        Renders each fixture on the GPU at 1:1 and compares it byte for byte with the CPU port of htpp
+        (<code>src/color/tonemap.ts</code>, <code>src/color/palettes.ts</code>). Tolerance: 1 step per 8-bit channel.
+      </p>
+      <p id="summary">Running…</p>
+      <table>
+        <thead>
+          <tr><th>Image</th><th>Settings</th><th>Max Δ</th><th>Pixels over tolerance</th><th>Worst pixel (expected → GPU)</th></tr>
+        </thead>
+        <tbody id="results"></tbody>
+      </table>
+      <canvas id="gl" width="1" height="1"></canvas>
+    </main>
+    <script type="module" src="/src/parity/main.ts"></script>
+  </body>
+</html>
