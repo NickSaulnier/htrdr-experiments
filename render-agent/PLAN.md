@@ -105,10 +105,26 @@ parse_request ─► build_scene ─► preview (low spp) ─► read_stats ─�
   - **Smoke tests:** clear-sky 10 µm (64×48, 16 spp) in 0.42 s, and CIE XYZ with the sun at 40° (160×120, 32 spp) in 0.52 s. The second has a mean relative error of 41 %, so reaching 1 % would need about 54k spp, roughly 15 minutes.
   - **htrdr bug found:** in **monochromatic** `lw` runs (`lw=x,x`), the brightness temperature in pair 0 is off by a factor of 10⁹ in radiance. 0.002256 W/sr/m²/nm at 10 µm is reported as 53 K; inverting Planck gives 229 K. Band runs (`lw=9500,10500`) are consistent, and the radiance is right in both. **So `read_stats` must recompute Tb from the radiance for monochromatic runs.** Worth reporting upstream.
   - Band runs are noisier than monochromatic ones (about 10 % vs 2 % relative error at 16 spp), because they also sample the k-distribution.
-- **M1 – Python core:**
-  - `SceneSpec`, an argv builder with golden tests, and a subprocess runner with timeout and cancel.
-  - The htrdr-image parser, stats, and the spp/time estimator.
-  - A fake htrdr producing synthetic images with σ ∝ 1/√spp, so the loop can be tested without htrdr.
+- **M1 – Python core** ✅ done 2026-10-17. A `uv` project (Python 3.12, numpy, pydantic) in `src/htrdr_agent/`. **46 tests pass**, including 2 against real htrdr (`pytest -m htrdr`, skipped when htrdr isn't installed).
+  - `scene.py`: `SceneSpec`, which validates what htrdr would reject and warns about what it accepts but probably isn't meant. `cache_key()` ignores the camera, sun and image, so camera moves reuse the `-O` cache.
+  - `argv.py`: the exact command line, with golden tests.
+  - `runner.py`: async, with timeout and cancel; stops the whole process group; keeps output tails.
+  - `image.py`: the htrdr-image parser (numpy fast path, careful fallback with line numbers), plus Planck and brightness-temperature inversion with σ.
+  - `stats.py`: `read_stats`' summaries. Recomputes Tb for monochromatic lw and notes when htrdr's value disagrees.
+  - `estimate.py`: spp for a target, a wall-time model, and `propose()`.
+  - `fake.py`: `fake-htrdr`. Same CLI; noise ∝ 1/√spp; reproduces the monochromatic Tb bug; deterministic per scene.
+  - **Lesson that shaped the estimator:** high percentiles of σ/|μ̂| are biased high, because the estimated mean is noisy. Where the per-pixel error is more than a few percent, a p95-based spp estimate asks for too many samples, never too few. So `propose()` grows the spp by at most **16× per step** (`max_growth`), and each less-noisy step gives a better estimate.
+
+    Measured on the fake (80×60, CIE XYZ), ratio per 4× spp (ideal 2):
+
+    | spp step | p95 | p50 |
+    |---|---|---|
+    | 8 → 32 | 6.15 | 1.96 |
+    | 32 → 128 | 4.01 | 2.02 |
+    | 128 → 512 | 2.48 | 1.99 |
+
+    The median is unbiased. The p95 still overstates at 128 spp, about 12 % per pixel, so an estimate from there overshoots by roughly (2.48/2)² ≈ 1.5×.
+  - **Open for M4:** a less biased tail estimate, so the agent doesn't overspend on the last step. For example, use a locally smoothed |μ̂| in the denominator, or estimate the p95 from the median and the spread of the per-pixel σ/μ. Measure both against the fake before choosing.
 - **M2 – FastMCP server:** the four tools, plus run logs as resources. Tested with FastMCP's in-memory client.
 - **M3 – LLM:** endpoint config and request parsing, with an eval set of about 20 requests mapped to expected specs (including the 10 µm-plus-sun conflict).
 - **M4 – LangGraph loop:** guardrails, interrupts and checkpointing. Run end to end on the fake htrdr, then on the real one.
