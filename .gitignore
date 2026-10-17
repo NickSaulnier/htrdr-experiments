@@ -4,3 +4,4 @@ dist/
 fixtures/large/
 test-results/
 playwright-report/
+runs/

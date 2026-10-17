@@ -1,0 +1,2 @@
+# Shell scripts run inside WSL; keep them LF whatever core.autocrlf says.
+*.sh text eol=lf
