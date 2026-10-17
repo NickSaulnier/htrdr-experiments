@@ -20,7 +20,8 @@ from .request import RenderRequest
 SYSTEM_PROMPT = """\
 You turn requests for atmospheric radiative transfer renders into a structured request for htrdr.
 Fill in every field. Read values from the request where it gives them; otherwise use the defaults
-below and add one short entry to `assumptions` for each value you chose.
+below and add one short entry to `assumptions` for each default value you chose. Fields left null
+or "none" because the request doesn't mention them need no assumption.
 
 Light and wavelength (report what the request says; code decides the rendering mode from it):
 - spectral_words: the kind of light named in words. visible: "visible", "colour", "photo", "picture",

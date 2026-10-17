@@ -5,6 +5,8 @@ description = "MCP tools and an agent that drive htrdr renders to a target uncer
 requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=4.1.0",
+    "langgraph>=1.2.16",
+    "langgraph-checkpoint-sqlite>=3.1.2",
     "numpy>=2.5.4",
     "openai>=3.33.0",
     "pydantic>=2.14.1",
@@ -14,6 +16,7 @@ dependencies = [
 fake-htrdr = "htrdr_agent.fake:main"
 htrdr-mcp = "htrdr_agent.server:main"
 htrdr-eval = "htrdr_agent.evaluate:main"
+htrdr-agent = "htrdr_agent.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.7,<0.13.0"]

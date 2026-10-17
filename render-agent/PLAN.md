@@ -156,7 +156,29 @@ parse_request ─► build_scene ─► preview (low spp) ─► read_stats ─�
     - Every case where the words disagree with the numbers gets a note, e.g. "IR at 3.5 µm is rendered with sunlight only".
   - **Thinking mode is ruled out.** At temperature 0, Qwen's reasoning loops ("Wait, I need to check…") until it runs out of tokens: 16,384 tokens in 274 s with no answer. Without thinking, a request takes 5–8 s, and 20 run concurrently in about 9 s.
   - **Evals** (`htrdr-eval`, three repeats each): `requests.jsonl` 60/60, `holdout.jsonl` 24/24, `holdout2.jsonl` 24/24. Both holdouts have since shaped the design, so they aren't unseen anymore. **The last unseen score was holdout2 before its fixes: 6 of 8 cases.** It missed "quick thermal view" (no target) and "Thanks, that's all" (would have rendered defaults). A fresh holdout is needed before claiming generalization.
-- **M4 – LangGraph loop:** guardrails, interrupts and checkpointing. Run end to end on the fake htrdr, then on the real one.
+- **M4 – LangGraph loop** ✅ done 2026-10-17. `agent.py` (LangGraph 1.2), `runlog.py`, and `cli.py` (`htrdr-agent`). **107 tests pass**, 11 of them for the agent.
+  - **Graph:** parse → build → render → stats → decide → (approve →) render … → finish.
+    - Tools, parser and decider are injected, and the state is plain JSON.
+    - The CLI runs the MCP server in-process and goes through a FastMCP client, so the agent uses the same tools an external client would.
+  - **Guardrails (in code):**
+    - Reaching the target stops without consulting the LLM.
+    - The decide step lists only the options that fit the budget and limits: the proposal, the largest affordable render, or stop.
+    - The LLM's choice is an enum of those options. Anything else, or an LLM failure, falls back to the rule's choice, and the log records which happened.
+    - There's a cap on iterations (8) and on spp.
+  - **Approvals:** a render predicted to take longer than 120 s waits on a LangGraph `interrupt()`. The approval node does nothing else, because a resumed node reruns from its start.
+  - **Checkpoints:** in SQLite (`runs/agent/checkpoints.sqlite`). A test kills the run at an approval and resumes it with fresh objects on the same files; `htrdr-agent --resume RUN_ID` does the same.
+  - **Run log:** `runs/agent/<id>/run.md` and `run.json`, with the request, assumptions, warnings, every exact command line, and each decision with its facts, reason and who made it.
+  - **Real end to end** (real htrdr + Qwen, the example request at 320×240):
+
+    | spp | wall | predicted | p95 |
+    |---|---|---|---|
+    | 8 | 1.04 s | 1.03 s | 61.3 % |
+    | 128 | 1.23 s | 1.29 s | 11.6 % |
+    | 2,048 | 5.38 s | 5.37 s | 2.79 % |
+    | 19,165 | 42.1 s | 41.9 s | **0.917 %** ✓ |
+
+    The whole run took about 85 s. Predictions were within 5 % because the cost model also used the scene's earlier renders.
+  - **Fixed after the first real run:** Qwen's free-text reasons quoted wrong numbers (for example 5.048 % for a p95 of 61.3 %, which was really a Tb note). Now code writes each decision's facts, the LLM gets clearly labelled percentages and is told not to quote numbers, and its reasons only judge.
 - **M5 – Run logs and integration:** a real-htrdr run of the example request, with its output opened in the viewer.
 
 ## 6. Open questions

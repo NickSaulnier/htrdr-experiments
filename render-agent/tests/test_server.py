@@ -89,8 +89,9 @@ def test_preview_then_refine_until_the_target_is_met(gas: Path, tmp_path: Path):
         progress.append(value)
 
     async def scenario():
-        # Run time proportional to spp, so the cost model has something to fit.
-        async with Client(create_server(config(tmp_path, sleep=None, FAKE_HTRDR_SPEED="1e-2"))) as c:
+        # Run time proportional to spp, and large enough next to process-startup
+        # jitter (~0.5 s) for the cost model to measure a per-spp cost.
+        async with Client(create_server(config(tmp_path, sleep=None, FAKE_HTRDR_SPEED="0.1"))) as c:
             sid = (await call(c, "build_scene", spec=ir_spec(gas)))["scene_id"]
             spp, history = 4, []
             for _ in range(6):
