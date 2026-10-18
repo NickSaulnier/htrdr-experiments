@@ -136,6 +136,52 @@ All runs below are reproducible with `spikes/m0.sh` (box scene: a 200 m grey gro
 - Optional: an import script for the Blender 5.1 install on Windows, for an interactive look.
 - Done when a visible render at noon looks right (in the viewer) and the tests pass.
 
+#### M1 results
+
+`uv run citylapse-city out/city-s1 --seed 1` writes `city.obj`, `facets.csv`, `city.mtls` (300 K everywhere until M3) and `city.json` (a summary) in 3.5 s. `src/citylapse/city.py`, 11 tests in `tests/test_city.py` (one marked `htrdr` renders the city for real).
+
+- **The tile.** 240 m square, 3 × 3 blocks on an 80 m pitch:
+  - 12 m streets centred on the block lines, so the tile edges are mid-street;
+  - 4 m sidewalks;
+  - 60 m block interiors split into 2–3 × 2–3 lots;
+  - one park block.
+- **Buildings.** 85 % of lots get a building, with lognormal heights (median 6 floors of 3 m, 2–15 floors). The two largest footprints become towers of 18–28 floors.
+  - Street-facing walls sit on the sidewalk 70 % of the time.
+  - Interior sides step back 2 m, so neighbours are at least 4 m apart and never share a wall.
+  - Seed 1 gives 43 buildings up to 57 m.
+- **One integer lattice.** All geometry sits on a lattice of 2 m horizontally by 3 m vertically. Ground cells, roof cells and wall columns share edges exactly, so the mesh is conforming. The tests check that:
+  - every directed edge has exactly one opposite, except along the tile border, which is exactly 4 × 120 edges;
+  - every triangle's right-hand normal equals its facet's outward normal;
+  - ground cells plus footprints exactly tile the square.
+- **Facets** (material names, and so temperatures): ground 2 × 2 m, roofs 4 × 4 m, walls 4 m wide × one floor. Seed 1 has 18,197 facets (56,832 triangles): street 3,996, sidewalk 2,304, yard 2,340, park 900, roof 1,331, wall 7,326.
+- **usemtl convention**, matching the pack's `city.obj` and `plane.obj`: the two names are the media on the two sides, the front being the side from which the vertices look clockwise. A ray coming from one side hits the other side's material. The generator winds every quad counter-clockwise seen from the air and writes `usemtl <facet>:air`, so the front medium is the solid. This is the M0 `white:black` result read the right way round.
+- **Materials.** SLUM's paper and documentation (which name the categories) couldn't be fetched (the ScienceDirect and Reading PDFs refuse automated access), so the roles follow meso-star's own `city.obj`:
+  - **Walls:** B, C and S codes (B001, B002, B005, B007, B008, B011, B013, C003, C006, C008, S004, S005), one per building.
+  - **Roofs:** R, G and Z codes plus A008 (R001, R002, R004, R009, R012, G001, G004, Z001, A008).
+  - **Streets:** A003.
+  - **Sidewalks:** C004.
+  - **Yards:** S002, G002 or C001.
+  - **Park:** `legacy/grass`.
+
+  Glass and pitched roofs are left out for now: all walls are opaque lambertian and all roofs are flat.
+- **Renders** (`out/city-s1/top.png` and `oblique.png`, sun at `-D 120,50`):
+  - the tile repeats seamlessly;
+  - shadows fall away from the sun;
+  - neither the orthographic top view (`up=0,1,0`) nor the perspective view is mirrored (checked against the tower positions).
+- **Cost per city frame**, 960 × 540 at 64 spp:
+
+  | band | wall time | CPU time | memory | noise |
+  |---|---|---|---|---|
+  | visible | 14.4 s | 332 s | 0.85 GB | Y relative error: median 11.6 %, p95 60 % |
+  | thermal | 6.1 s | 69 s | 0.84 GB | Tb σ mean 1.9 K, median relative 0.63 % |
+
+  - **Load time:** about 3.7 s and 640 MB of each run is htrdr parsing the 18,197 material lines, each of which re-reads its 1,040-wavelength SLUM file (the box scene loads in 0.4 s). That's acceptable per frame. If it ever matters, resampled mrumtl copies would cut it.
+  - **Visible is the expensive band:** shadowed street canyons are lit only by skylight, and at low spp many of their pixels are exactly 0. A 1 % median would need about 135 × 64 spp, roughly 30 min per 960 × 540 frame. **M4 therefore targets 3 % median relative error at 640 × 360.** That's (11.6/3)² ≈ 15× the spp on 0.44× the pixels, about 75 s per frame once the 10.7 s of 64-spp rendering time is scaled.
+  - **Thermal:** σ(Tb) ≈ 0.5 K needs about 14×, so about 40 s per frame at 960 × 540 or 20 s at 640 × 360.
+  - A day at 15-minute steps (about 60 visible frames and 96 thermal frames) is therefore roughly 1.8 hours, before crash retries.
+- **SIGFPE:** 3 of the 4 attempts at the visible city frame crashed, so the chunked rendering planned in M2 is needed, not optional.
+- Not done: the optional Blender import script.
+
 ### M2: Sun path and frame runner
 
 - `sun.py`: the NOAA solar position algorithm (no dependencies), tested against published values, plus the conversion to `-D`.

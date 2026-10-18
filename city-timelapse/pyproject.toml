@@ -1,0 +1,26 @@
+[project]
+name = "citylapse"
+version = "0.1.0"
+description = "A procedural city rendered with htrdr-atmosphere over a day: time-lapses, flux maps and 3D views"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.5.4",
+]
+
+[project.scripts]
+citylapse-city = "citylapse.city:main"
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "htrdr: runs the real htrdr-atmosphere (needs it installed and the starter pack)",
+]
