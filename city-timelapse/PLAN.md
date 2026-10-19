@@ -96,7 +96,7 @@ All runs below are reproducible with `spikes/m0.sh` (box scene: a 200 m grey gro
 - **SIGFPE.** Two of 8 full-load 960 × 540 visible runs died with SIGFPE (exit 136). A crashed run leaves a **0-byte output**, because `-f` truncates the file first. The frame runner must:
   - write to a temporary name and rename it only on exit 0;
   - retry, as the MCP server does.
-- **Not bit-reproducible.** Repeated identical runs give different output, with file sizes varying by a few kB. The noise isn't frozen between frames, so frame-to-frame flicker is set only by σ.
+- **Reproducibility. Corrected in M2:** the estimates *are* bit-reproducible. Repeated identical runs differ only in the per-path timing columns (7 and 8), and that difference alone is why the file sizes varied. Every mean and σ is identical. See M2 for why and what it implies.
 - **Starter pack.** Fetched and SHA-512 verified (38 min at about 0.7 MB/s). It unpacks to 4.2 GB in `~/htrdr-data/spk/htrdr-Atmosphere-Starter-Pack-0.8.0`, and the 1.8 GB archive is kept next to it. The pack's materials files use `"${HTRDR_ATMOSPHERE_SPK}/…"` paths. Ours write absolute paths.
 - **SLUM materials** (`spikes/slum_table.py`): 74 lambertian files, each with 1,040 wavelengths over 0.35–14 µm, but **nothing between 1.0 and 8.0 µm**. htrdr interpolates across that gap, which matters for the broadband `sw=300,4000` flux and `lw=4000,100000` flux, but not for visible or 9–10 µm. The M3 model uses its own broadband albedo, taken from the 0.35–1.0 µm part, and says so.
   - Visible albedo ranges from 0.05 (L002, Z008) to 0.58 (S004).
@@ -179,7 +179,7 @@ All runs below are reproducible with `spikes/m0.sh` (box scene: a 200 m grey gro
   - **Visible is the expensive band:** shadowed street canyons are lit only by skylight, and at low spp many of their pixels are exactly 0. A 1 % median would need about 135 × 64 spp, roughly 30 min per 960 × 540 frame. **M4 therefore targets 3 % median relative error at 640 × 360.** That's (11.6/3)² ≈ 15× the spp on 0.44× the pixels, about 75 s per frame once the 10.7 s of 64-spp rendering time is scaled.
   - **Thermal:** σ(Tb) ≈ 0.5 K needs about 14×, so about 40 s per frame at 960 × 540 or 20 s at 640 × 360.
   - A day at 15-minute steps (about 60 visible frames and 96 thermal frames) is therefore roughly 1.8 hours, before crash retries.
-- **SIGFPE:** 3 of the 4 attempts at the visible city frame crashed, so the chunked rendering planned in M2 is needed, not optional.
+- **SIGFPE:** 3 of the 4 attempts at the visible city frame crashed. (M2 found that chunking can't help, so frames are retried whole.)
 - Not done: the optional Blender import script.
 
 ### M2: Sun path and frame runner
@@ -187,12 +187,73 @@ All runs below are reproducible with `spikes/m0.sh` (box scene: a 200 m grey gro
 - `sun.py`: the NOAA solar position algorithm (no dependencies), tested against published values, plus the conversion to `-D`.
 - `frames.py`: builds a day schedule (default every 15 min). Each step has a visible job (sun above about 2°), a thermal job and the flux jobs.
 - Jobs are idempotent: each output carries a manifest (exact argv, input hashes, timings, retries), and a rerun skips finished frames.
-- Long frames are rendered as several independent chunks of spp/k each, then merged:
-  - pixel means are averaged with spp weights;
-  - variances combine as Σ nᵢ² σᵢ² / n².
-  A SIGFPE then loses one chunk instead of a whole frame (M0 measured 4 of 6 cloudy runs crashing). Tests check that merged chunks agree with a single run within σ.
-- spp comes from render-agent's estimator, with a per-frame target error, so noise is the same across frames and the time-lapse doesn't flicker more at dusk.
+- ~~Long frames are rendered as several independent chunks, then merged.~~ **Dropped in M2:** htrdr's RNG makes chunks of one frame share their random numbers (see the M2 results).
+- spp comes from render-agent's estimator, with a per-frame target error, so noise is the same across frames and the time-lapse doesn't flicker more at dusk. **Changed in M2:** one spp per kind for the whole day, calibrated on the noisiest probe frames.
 - Done when a 4-frame coarse day runs end to end and resumes after a kill.
+
+#### M2 results
+
+`src/citylapse/{sun,planck,frames}.py`, 33 new tests (44 in all, one of them on real htrdr).
+
+```
+citylapse-day plan RUN --city out/city-s1 [--step 15 --start 05:00 --end 22:30 --size 640x360 --visible-spp N --thermal-spp N]
+citylapse-day calibrate RUN      # previews at 32 spp, suggests spp per kind
+citylapse-day run RUN [--kinds visible,thermal] [--limit N]
+citylapse-day status RUN
+```
+
+- **Sun.** NOAA's algorithm agrees with NREL's SPA (pvlib, a test-only dependency) to within 0.02° in elevation and 0.05° in azimuth at 7 dates and times, and to 0.05° in apparent elevation with refraction. htrdr azimuth = 90° − compass azimuth.
+- **The default day:** 21 June, Toulouse, 05:00–22:30 CEST every 15 min. That's 131 jobs: 60 visible (sun at least 2° up) and 71 thermal (night included; longwave ignores the sun).
+- **Runner.** Each job writes `frame.txt` and `job.json`:
+  - the exact argv and command line, with the SHA-256 of every input;
+  - each attempt's thread count, return code and wall time;
+  - the frame's noise.
+
+  The job key hashes the argv (minus the output path) and the input hashes. `run` skips finished jobs whose key still matches, so changing the spp re-renders one kind, and editing a materials file re-renders what uses it. Frames are written as `.partial` and renamed on success.
+- **SIGFPE and kills.** On SIGFPE a frame is retried with half the threads, up to 4 attempts; any other failure is recorded and retried on the next `run`. SIGTERM and Ctrl-C stop htrdr's process group before exiting, because htrdr runs in its own session and would otherwise keep rendering, orphaned.
+- **Coarse day on real htrdr** (5 times, 4 visible and 5 thermal at 640 × 360; visible at 386 spp, thermal at 48):
+  - killed with SIGTERM after 100 s, with 3 frames done and the 4th in progress;
+  - no htrdr left running, and only a `.partial` for the interrupted frame;
+  - `run` again rendered the remaining 6 and skipped the 3;
+  - one SIGFPE (on 09:00 visible, attempt 1) was retried successfully.
+
+**What M2 found about htrdr:**
+
+- **htrdr is deterministic: the M0 note was wrong.** Each 8 × 8 pixel tile gets its own Threefry stream at offset 10,000 × (the tile's Morton code), with no seed (`src/core/htrdr_draw_map.c`). Identical runs give bit-identical means and σ; only the timing pair differs. Consequences:
+  - **No chunking.** Two runs of a frame share their random numbers. Runs at different spp still share the start of every tile's stream, so the first pixels of each tile are correlated. Chunks can't be merged as independent estimates, so a frame is one run, retried whole. A retry reproduces the same image.
+  - **Frozen noise.** At a fixed spp, every frame of the day uses the same random numbers per pixel, which should make the noise pattern shift slowly instead of flickering (M4 will see). So the spp is fixed per kind for the whole day, not chosen per frame.
+  - **Independent renders do exist.** Rolling the camera 180° (`up` negated) maps every pixel into a different tile and gives an independent estimate of the same pixels. That's how the next two findings were measured.
+- **Band brightness temperature.** htrdr's Tb for `lw=lo,hi` inverts the *band-integrated* Planck radiance; `planck.py` reproduces it to within 0.009 K. **htrdr 0.12's σ(Tb) is 2× too large.** Across independent renders, z = Δ/√(σa² + σb²) has std 0.50 for Tb, and 1.00–1.02 for the radiance and for X, Y and Z. The runner computes σ(Tb) from σ(radiance) instead.
+- **Use the RMS of σ, not its median.** At low spp most pixels haven't yet sampled the rare high-contribution paths, so their reported σ is too small. Scanning thermal at 160 × 96:
+
+  | spp | 8 | 32 | 40 | 48 | 64 | 128 |
+  |---|---|---|---|---|---|---|
+  | median σ(radiance) × √spp | 0.33 | 0.56 | 1.30 | 1.42 | 1.25 | 1.26 |
+  | measured spread (independent pairs) × √spp | 1.48 | 1.50 | 1.51 | 1.50 | 1.52 | 1.49 |
+  | std of z | 1.11 | 1.03 | 1.03 | 1.02 | 1.02 | 1.01 |
+
+  So σ is right on average at every spp, but its median is not. Calibrating on the median predicted 0.46 K at 48 spp, and the full render gave 1.21 K. The noise metrics are now:
+  - **thermal:** RMS σ(Tb);
+  - **visible:** RMS σ(Y) relative to the frame's white, the Y at 99.5 % as htpp takes it, but on a 3 × 3 box-filtered Y, because noise at 32 spp inflated the raw white from 6.7 to 8.3.
+
+  With these, 32-spp previews predict the full renders to within 5 % (ratios 0.999–1.052). A per-pixel relative-error target was dropped: shadowed faces lit only by skylight are a few percent of white and dominate it (47 % median at 32 spp on the backlit 09:00 frame).
+- **Calibration for the default view** (targets: RMS σ(Y)/white 2 %, RMS σ(Tb) 0.5 K):
+
+  | kind | value at 32 spp | suggested spp |
+  |---|---|---|
+  | visible | 5.9 % (09:00), 6.1 % (17:00), 10.7 % (21:00, sun at 5°) | **1,102**, set by the dusk frame |
+  | thermal | 1.63 K | **409** |
+
+  Thermal is the same at every time until M3, since every surface is at 300 K.
+- **Cost model**, from the coarse run (fixed time + per-spp time):
+  - visible: about 4.6 s + 0.094 s/spp, so about 108 s per frame at 1,102 spp;
+  - thermal: about 4.2 s + 0.025 s/spp, so about 15 s per frame at 409 spp.
+
+  The full default day comes to about 1.8 h + 0.3 h ≈ **2.1 h** before SIGFPE retries. `calibrate` itself still charges all of a preview's time to the samples, which overestimates (it predicted 271 s per visible frame).
+- Not done:
+  - the flux jobs (M5);
+  - per-step materials (`city/materials/HHMM.mtls`, picked up automatically once M3 writes them);
+  - clouds and the `-O` cache, both waiting on the BIOS fix.
 
 ### M3: Surface temperature model
 

@@ -4,11 +4,16 @@ version = "0.1.0"
 description = "A procedural city rendered with htrdr-atmosphere over a day: time-lapses, flux maps and 3D views"
 requires-python = ">=3.12"
 dependencies = [
+    "htrdr-agent",
     "numpy>=2.5.4",
 ]
 
 [project.scripts]
 citylapse-city = "citylapse.city:main"
+citylapse-day = "citylapse.frames:main"
+
+[tool.uv.sources]
+htrdr-agent = { path = "../render-agent", editable = true }
 
 [build-system]
 requires = ["uv_build>=0.12.7,<0.13.0"]
@@ -16,6 +21,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "pvlib>=0.13",
     "pytest>=9.1.1",
 ]
 
